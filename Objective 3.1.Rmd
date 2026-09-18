@@ -1,0 +1,120 @@
+---
+title: "Objective 3.1: Characterizing environmental gradients across plateaus (PCA)"
+output: html_notebook
+---
+
+*Aim: To perform PCA analysis using monthly environmental data across sites*
+
+Data required: site_environment_data_matrix.csv: site x month environmental data matrix (n = 32 rows = 8 sites x 4 months)
+
+```{r}
+library(dplyr)
+library(corrplot)
+library(ggplot2)
+```
+
+1. Load and average the site x month environmental data matrix:
+```{r}
+data <- read.csv("site_environment_data_matrix.csv", stringsAsFactors = FALSE)
+
+avg_data <- data %>%
+  group_by(Site, Month) %>%
+  summarise(across(where(is.numeric), \(x) mean(x, na.rm = TRUE)), .groups = "drop") %>%
+  arrange(factor(Site, levels = unique(data$Site)))
+
+# Subset numeric environmental variables and standardize
+data_final <- subset(avg_data, select = -c(Site, Month, Latitude, Longitude))
+data_scaled <- as.data.frame(scale(data_final))
+```
+
+2. Correlation analysis to identify and remove collinear variables:
+```{r}
+cor_matrix <- cor(data_scaled, method = "pearson")
+
+new_labels <- c("Elevation", "Max. temp.", "Min. temp.", "Avg. temp.",
+                 "Water vapour", "Wind speed", "Solar rad.", "Precipitation")
+rownames(cor_matrix) <- new_labels
+colnames(cor_matrix) <- new_labels
+
+corrplot(cor_matrix, method = "number", tl.col = "black", tl.srt = 45)  # Fig. S3
+```
+
+Based on the correlation matrix, wind speed, minimum temperature, and maximum temperature were each highly correlated (|r| > 0.8) and were excluded. 
+Retained: elevation, mean temperature (tavg), water vapour pressure (vapr), solar radiation (srad), and precipitation (prec).
+
+3. Perform PCA on the reduced set of environmental variables:
+```{r}
+data_pca <- subset(data_scaled, select = -c(tmax, tmin, wind))
+
+pca_result <- prcomp(data_pca, center = FALSE, scale. = FALSE)  # already centered/scaled above
+
+pca_summary <- summary(pca_result)
+var_explained <- pca_summary$importance["Proportion of Variance", ] * 100  # dynamic, not hardcoded
+
+cat(sprintf(
+  "PC1 explains %.2f%% and PC2 explains %.2f%% of total variation (first two axes: %.2f%%)\n",
+  var_explained["PC1"], var_explained["PC2"],
+  var_explained["PC1"] + var_explained["PC2"]
+))
+
+pca_result$rotation  # Table S5: loadings across all axes
+
+pca_scores <- as.data.frame(pca_result$x)
+pca_scores$Site  <- factor(avg_data$Site, levels = unique(avg_data$Site))
+pca_scores$Month <- factor(avg_data$Month, levels = c("Jul", "Aug", "Sept", "Oct"))
+```
+
+
+4. Extract loadings for PC1/PC2, scaled for display:
+```{r}
+loadings <- as.data.frame(pca_result$rotation[, 1:2])
+loadings$Variable <- rownames(loadings)
+
+arrow_scale <- 4
+loadings$PC1 <- loadings$PC1 * arrow_scale
+loadings$PC2 <- loadings$PC2 * arrow_scale
+
+## 5. Visualize the PCA ordination with loading vectors (Fig. 3B) ------------
+
+site_colors <- c(
+  "Rai" = "#223A70", "Kas" = "#335C8A", "Raj" = "#4B7CA3", "Cha" = "#6AA6B4",
+  "Udg" = "#5FA782", "Bor" = "#88B04B", "Kha" = "#E0C54F", "Man" = "#D4A937"
+)
+site_labels <- c(
+  "Rai" = "Raireshwar", "Kas" = "Kaas", "Raj" = "Rajapuri", "Cha" = "Chalkewadi",
+  "Udg" = "Udgiri", "Bor" = "Borbet", "Kha" = "Khamda dev", "Man" = "Mangeli"
+)
+
+pc1_lab <- sprintf("PC1 (Explained %.2f%% variation)", var_explained["PC1"])
+pc2_lab <- sprintf("PC2 (Explained %.2f%% variation)", var_explained["PC2"])
+
+pca_plot_loadings <- ggplot(pca_scores, aes(x = PC1, y = PC2, label = Site)) +
+  geom_polygon(aes(group = Site, fill = Site, color = Site), linewidth = 0.8, alpha = 0.8) +
+  geom_point(aes(fill = Site, shape = Month), color = "black", size = 3, show.legend = c(fill = FALSE)) +
+  scale_shape_manual(values = c("Jul" = 21, "Aug" = 22, "Sept" = 24, "Oct" = 25)) +
+  scale_fill_manual(values = site_colors, labels = site_labels) +
+  scale_color_manual(values = site_colors, labels = site_labels) +
+  geom_segment(data = loadings, inherit.aes = FALSE,
+               aes(x = 0, y = 0, xend = PC1, yend = PC2),
+               arrow = arrow(length = unit(0.25, "cm")), color = "black", linewidth = 0.8) +
+  geom_text(data = loadings, inherit.aes = FALSE,
+            aes(x = PC1, y = PC2, label = Variable),
+            color = "black", size = 4, nudge_x = 0.37, nudge_y = 0.15) +
+  guides(
+    fill = guide_legend(order = 1, title = "Site"),
+    color = "none",
+    shape = guide_legend(order = 2, title = "Month")
+  ) +
+  theme_bw() +
+  labs(title = "PCA of environmental conditions for months across sites",
+       x = pc1_lab, y = pc2_lab) +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 12),
+        axis.title.x = element_text(face = "bold", size = 14),
+        axis.title.y = element_text(face = "bold", size = 14),
+        legend.title = element_text(size = 13, face = "bold"),
+        legend.text  = element_text(size = 12))
+
+pca_plot_loadings
+```
+
+*##############################################################################*

@@ -1,0 +1,105 @@
+---
+title: "Objective 2.1: Beta diversity partitioning (turnover and nestedness)"
+output: html_notebook
+---
+
+*Aim: To partition Sørensen's beta diversity (βsor) into its turnover (βsim) and nestedness (βsne) components*
+
+This is to test whether compositional differences among plateaus arise primarily from species replacement or from differential
+species loss.
+
+Data required: site_species_qualitative.csv (presence/absence)
+
+1. Load data:
+```{r}
+library(betapart)
+library(vegan)
+
+raw_data <- read.csv("site_species_qualitative_data_matrix.csv")
+
+# Use Species code as row names, drop the full species name column,
+# keep only the site presence/absence columns
+comm_pa <- raw_data %>%
+  select(-Sr..No., -Flowering.species) %>%
+  tibble::column_to_rownames("Species.code")
+
+# Transpose: beta.multi() expects sites as rows, species as columns
+comm_pa <- t(comm_pa)
+```
+
+2. Partition multi-site beta diversity (Sørensen index):
+```{r}
+beta_parts <- beta.multi(comm_pa, index.family = "sorensen")
+beta_parts
+```
+
+Result:
+
+beta.SIM → Turnover    : 0.565 : Dissimilarity due to species replacement between sites
+beta.SNE → Nestedness  : 0.083 : Dissimilarity due to species loss/gain (nested subsets of richer communities)
+beta.SOR → Total       : 0.648 : Total community dissimilarity (replacement + nestedness) across all sites
+
+Interpretation:
+
+1. Total beta diversity (0.648) high compositional dissimilarity across sites.
+2. Turnover (0.565) accounts for the majority (87.19%) of this dissimilarity, indicating that most site differences are due to species replacement, not just richness differences.
+3. Nestedness (0.083) is relatively small (12.81%), suggesting that species loss or nested subset patterns contribute relatively little to overall beta diversity.
+
+These results suggest that sites host distinct species assemblages, rather than simply being richer or poorer subsets of a regional pool.
+
+3. Plot: relative contribution of turnover and nestedness:
+```{r}
+library(ggplot2)
+library(dplyr)
+
+# Values pulled directly from beta_parts, not hardcoded
+beta_data <- data.frame(
+  Component = c("Similarity", "Turnover (βSIM)", "Nestedness (βSNE)"),
+  Value = c(1 - beta_parts$beta.SOR, beta_parts$beta.SIM, beta_parts$beta.SNE)
+)
+
+beta_data$Component <- factor(beta_data$Component,
+                               levels = c("Similarity", "Nestedness (βSNE)", "Turnover (βSIM)"))
+
+beta_data <- beta_data %>%
+  arrange(desc(Component)) %>%
+  mutate(
+    Percentage = (Value / sum(Value)) * 100,
+    Label = paste0(round(Percentage, 1), "%"),
+    ypos = cumsum(Value) - 0.5 * Value
+  )
+
+my_colors <- c(
+  "Similarity"        = "#D2B48C",
+  "Turnover (βSIM)"   = "#F67065",
+  "Nestedness (βSNE)" = "#F3B0A1"
+)
+
+beta_pie <- ggplot(beta_data, aes(x = 2, y = Value, fill = Component)) +
+  geom_bar(stat = "identity", width = 1, color = "white") +
+  coord_polar(theta = "y", start = 0) +
+  xlim(0.5, 2.5) +
+  scale_fill_manual(values = my_colors) +
+  theme_void() +
+  labs(
+    title = "Beta diversity partitioning (Sørensen)",
+    subtitle = "Relative contribution of turnover and nestedness",
+    fill = "Component"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5, size = 14),
+    plot.subtitle = element_text(hjust = 0.5, color = "grey30"),
+    legend.position = "right",
+    plot.background = element_rect(fill = "transparent", color = NA),
+    panel.background = element_rect(fill = "transparent", color = NA),
+    legend.background = element_rect(fill = "transparent", color = NA)
+  ) +
+  geom_text(aes(y = ypos, label = Label), color = "black", fontface = "bold", size = 4.5)
+
+beta_pie
+
+# ggsave(filename = "beta_diversity_partitioning.png", plot = beta_pie,
+#        width = 5.5, height = 4, dpi = 300)
+```
+
+*##############################################################################*

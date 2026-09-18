@@ -1,0 +1,331 @@
+---
+title: "Objective 2.2: Testing distance-decay relationship (Mantel test)"
+output: html_notebook
+---
+
+Aim:
+1. To test whether compositional dissimilarity between sites increases with geographic distance, using Mantel tests on both Jaccard (presence/absence) and Bray-Curtis (abundance) dissimilarity matrices.
+2. To test the distance-dacy relationship at genus and family level (for taxonomic resolution sensitivity check)
+
+Data required: 
+
+geographic_distance_matrix.csv, 
+jaccard_dissimilarity_matrix.csv,
+bray_curtis_dissimilarity_matrix.csv
+site_genus_data_matrix.csv,
+site_family_data_matrix.csv
+
+*Aim 1: To test whether compositional dissimilarity between sites increases with geographic distance, using Mantel tests on both Jaccard (presence/absence) and Bray-Curtis (abundance) dissimilarity matrices.*
+
+--- Species-level: Jaccard dissimilarity vs. geographic distance ---
+
+1. Load data:
+```{r}
+distance_data <- read.csv("geographic_distance_matrix.csv")
+jaccard_data  <- read.csv("jaccard_dissimilarity_matrix.csv")
+
+distance_data <- na.omit(distance_data)
+```
+
+2. Convert to distance objects:
+```{r}
+dist_matrix <- as.matrix(distance_data[, -1])
+jac_matrix  <- as.matrix(jaccard_data[, -1])
+jac_matrix  <- 1 - jac_matrix  # convert similarity to dissimilarity, if stored as similarity
+
+dist_matrix <- as.dist(dist_matrix)
+jac_matrix  <- as.dist(jac_matrix)
+```
+
+3. Run Mantel test:
+```{r}
+library(vegan)
+
+mantel_jaccard <- mantel(jac_matrix, dist_matrix, method = "pearson", permutations = 9999)
+mantel_jaccard
+```
+
+4. Scatter plot:
+```{r}
+library(ggplot2)
+
+dist_values <- as.numeric(as.matrix(dist_matrix)[lower.tri(as.matrix(dist_matrix))])
+jac_values  <- as.numeric(as.matrix(jac_matrix)[lower.tri(as.matrix(jac_matrix))])
+
+data_mantel_jaccard <- data.frame(distance = dist_values, dissimilarity = jac_values)
+
+label_jaccard <- paste0("Mantel's r = ", round(mantel_jaccard$statistic, 3),
+                         ", P = ", round(mantel_jaccard$signif, 3))
+
+jaccard_plot <- ggplot(data_mantel_jaccard, aes(x = distance, y = dissimilarity)) +
+  geom_smooth(method = "lm", col = "black", linewidth = 1.5) +
+  geom_point(color = "#F67065", size = 3) +
+  ggtitle("Community dissimilarity vs. geographical distance: Mantel test") +
+  xlab("Geographical distance (km)") +
+  ylab("Jaccard dissimilarity index") +
+  theme_bw() +
+  theme(axis.title = element_text(face = "bold", size = 12),
+        plot.title = element_text(face = "bold", hjust = 0.5),
+        plot.background = element_rect(fill = "transparent", color = NA),
+        panel.background = element_rect(fill = "transparent", color = NA)) +
+  annotate("text", x = Inf, y = -Inf, hjust = 1.1, vjust = -1.5,
+           label = label_jaccard, size = 4.5, fontface = "italic", color = "black")
+
+jaccard_plot
+
+# ggsave(filename = "similarity_vs_distance_jaccard.png", plot = jaccard_plot,
+#        width = 6, height = 4, dpi = 300)
+```
+
+--- Species-level: Bray-Curtis dissimilarity vs. geographic distance ---
+
+5. Load data:
+```{r}
+bray_data <- read.csv("bray_curtis_dissimilarity_matrix.csv")
+```
+
+6. Convert to distance objects:
+```{r}
+bray_matrix <- as.matrix(bray_data[, -1])
+bray_matrix <- 1 - bray_matrix  # convert similarity to dissimilarity, if stored as similarity
+bray_matrix <- as.dist(bray_matrix)
+```
+
+7. Run Mantel test:
+```{r}
+mantel_bray <- mantel(bray_matrix, dist_matrix, method = "pearson", permutations = 9999)
+mantel_bray
+```
+
+8. Scatter plot:
+```{r}
+bray_values <- as.numeric(as.matrix(bray_matrix)[lower.tri(as.matrix(bray_matrix))])
+
+data_mantel_bray <- data.frame(distance = dist_values, dissimilarity = bray_values)
+
+label_bray <- paste0("Mantel's r = ", round(mantel_bray$statistic, 3),
+                      ", P = ", round(mantel_bray$signif, 3))
+
+bray_plot <- ggplot(data_mantel_bray, aes(x = distance, y = dissimilarity)) +
+  geom_smooth(method = "lm", col = "black", linewidth = 1.5) +
+  geom_point(color = "#F67065", size = 3) +
+  ggtitle("Community dissimilarity vs. geographical distance: Mantel test") +
+  xlab("Geographical distance (km)") +
+  ylab("Bray-Curtis dissimilarity index") +
+  theme_bw() +
+  theme(axis.title = element_text(face = "bold", size = 12),
+        plot.title = element_text(face = "bold", hjust = 0.5),
+        plot.background = element_rect(fill = "transparent", color = NA),
+        panel.background = element_rect(fill = "transparent", color = NA)) +
+  annotate("text", x = Inf, y = -Inf, hjust = 1.1, vjust = -1.5,
+           label = label_bray, size = 4.5, fontface = "italic", color = "black")
+
+bray_plot
+
+# ggsave(filename = "similarity_vs_distance_bray.png", plot = bray_plot,
+#        width = 6, height = 4, dpi = 300)
+```
+
+--- Supplementary figure: Hierarchical clustering and similarity heatmaps ---
+
+9. Load dissimilarity matrices and convert to similarity for display:
+```{r}
+library(pheatmap)
+library(viridis)
+library(dendextend)
+
+jaccard_diss <- read.csv("jaccard_dissimilarity_matrix.csv", row.names = 1)
+bray_diss    <- read.csv("bray_curtis_dissimilarity_matrix.csv", row.names = 1)
+
+# Similarity is more intuitive for visual interpretation than dissimilarity:
+# higher values = more similar = darker cells
+jaccard_sim <- 1 - as.matrix(jaccard_diss)
+bray_sim    <- 1 - as.matrix(bray_diss)
+```
+
+10. Hierarchical clustering (average linkage) and manual reordering:
+```{r}
+jacc_distance <- as.dist(jaccard_diss)
+bray_distance <- as.dist(bray_diss)
+
+jacc_hc <- hclust(jacc_distance, method = "average")
+bray_hc <- hclust(bray_distance, method = "average")
+
+jacc_dendrogram <- as.dendrogram(jacc_hc)
+bray_dendrogram <- as.dendrogram(bray_hc)
+
+# Reorder dendrogram branches to reflect the north-to-south site sequence
+desired_order <- c("Man", "Kha", "Bor", "Udg", "Cha", "Raj", "Kas", "Rai")
+
+jacc_dendrogram_ordered <- rotate(jacc_dendrogram, order = desired_order)
+bray_dendrogram_ordered <- rotate(bray_dendrogram, order = desired_order)
+
+jacc_hc_rotated <- as.hclust(jacc_dendrogram_ordered)
+bray_hc_rotated <- as.hclust(bray_dendrogram_ordered)
+```
+
+11. Panel A: Jaccard similarity heatmap:
+```{r}
+jaccard_pheatmap <- pheatmap(jaccard_sim,
+                    cluster_rows = jacc_hc_rotated,
+                    cluster_cols = jacc_hc_rotated,   # cluster both axes so the diagonal stays interpretable
+                    display_numbers = TRUE,
+                    number_color = "black",
+                    fontsize_number = 12,
+                    color = viridis::viridis(100, direction = -1),
+                    border_color = "white",
+                    main = "Jaccard similarity index between study sites",
+                    fontsize_row = 10,
+                    fontsize_col = 10,
+                    number_format = "%.2f",
+                    treeheight_row = 80,
+                    treeheight_col = 0,   # hide column dendrogram, keep only the row dendrogram
+                    angle_col = 45,
+                    show_rownames = TRUE,
+                    show_colnames = TRUE,
+                    legend = TRUE)
+
+# pheatmap(jaccard_sim, ..., filename = "fig_S8A_jaccard_heatmap.png",
+#          width = 7, height = 5)
+```
+
+12. Panel B: Bray-Curtis similarity heatmap:
+```{r}
+bray_pheatmap <- pheatmap(bray_sim,
+         cluster_rows = bray_hc_rotated,
+         cluster_cols = bray_hc_rotated,
+         display_numbers = TRUE,
+         number_color = "black",
+         fontsize_number = 12,
+         color = viridis::viridis(100, direction = -1),
+         border_color = "white",
+         main = "Bray-Curtis similarity index between study sites",
+         fontsize_row = 10,
+         fontsize_col = 10,
+         number_format = "%.2f",
+         treeheight_row = 80,
+         treeheight_col = 0,
+         angle_col = 45,
+         show_rownames = TRUE,
+         show_colnames = TRUE,
+         legend = TRUE)
+
+# pheatmap(bray_sim, ..., filename = "fig_S8B_bray_heatmap.png",
+#          width = 7, height = 5)
+```
+
+*##############################################################################*
+
+*Aim 2: To test the distance-dacy relationship at genus and family level (for taxonomic resolution sensitivity check)*
+
+--- Genus-level: Bray-Curtis dissimilarity vs. geographic distance ---
+
+9. Load data:
+```{r}
+genus_final <- read.csv("site_genus_data_matrix.csv", row.names = 1)
+```
+
+10. Hellinger transformation and Bray-Curtis dissimilarity:
+```{r}
+genus_hell <- decostand(genus_final, method = "hellinger")
+
+genus_diss <- vegdist(genus_hell, method = "bray", binary = FALSE)
+genus_diss <- as.matrix(genus_diss)
+```
+
+11. Mantel test:
+```{r}
+genus_diss_d <- as.dist(genus_diss)
+
+mantel_genus <- mantel(genus_diss_d, dist_matrix, method = "pearson", permutations = 9999)
+mantel_genus
+```
+
+12. Scatter plot:
+```{r}
+genus_diss_vec <- as.vector(genus_diss_d)
+
+genus_mantel <- data.frame(
+  Geographic_distance = dist_values,
+  Genus_dissimilarity = genus_diss_vec
+)
+
+label_genus <- paste0("Mantel's r = ", round(mantel_genus$statistic, 3),
+                       ", P = ", round(mantel_genus$signif, 3))
+
+genus_plot <- ggplot(genus_mantel, aes(x = Geographic_distance, y = Genus_dissimilarity)) +
+  geom_smooth(method = "lm", col = "black", linewidth = 1.5) +
+  geom_point(color = "#F67065", size = 3) +
+  ggtitle("Community dissimilarity vs. geographical distance: Genus") +
+  xlab("Geographical distance (km)") +
+  ylab("Bray-Curtis dissimilarity index: Genus-level") +
+  theme_bw() +
+  theme(axis.title = element_text(face = "bold", size = 12),
+        plot.title = element_text(face = "bold", hjust = 0.5),
+        plot.background = element_rect(fill = "transparent", color = NA),
+        panel.background = element_rect(fill = "transparent", color = NA)) +
+  annotate("text", x = Inf, y = -Inf, hjust = 1.1, vjust = -1.5,
+           label = label_genus, size = 4.5, fontface = "italic", color = "black")
+
+genus_plot
+
+# ggsave(filename = "similarity_vs_distance_genus.png", plot = genus_plot,
+#        width = 6, height = 4, dpi = 300)
+```
+
+--- Family-level: Bray-Curtis dissimilarity vs. geographic distance ---
+
+13. Load data:
+```{r}
+family_final <- read.csv("site_family_data_matrix.csv", row.names = 1)
+```
+
+14. Hellinger transformation and Bray-Curtis dissimilarity:
+```{r}
+family_hell <- decostand(family_final, method = "hellinger")
+
+family_diss <- vegdist(family_hell, method = "bray", binary = FALSE)
+family_diss <- as.matrix(family_diss)
+```
+
+15. Mantel test:
+```{r}
+family_diss_d <- as.dist(family_diss)
+
+mantel_family <- mantel(family_diss_d, dist_matrix, method = "pearson", permutations = 9999)
+mantel_family
+```
+
+16. Scatter plot:
+```{r}
+family_diss_vec <- as.vector(family_diss_d)
+
+family_mantel <- data.frame(
+  Geographic_distance = dist_values,
+  Family_dissimilarity = family_diss_vec
+)
+
+label_family <- paste0("Mantel's r = ", round(mantel_family$statistic, 3),
+                        ", P = ", round(mantel_family$signif, 3))
+
+family_plot <- ggplot(family_mantel, aes(x = Geographic_distance, y = Family_dissimilarity)) +
+  geom_smooth(method = "lm", col = "black", linewidth = 1.5) +
+  geom_point(color = "#F67065", size = 3) +
+  ggtitle("Community dissimilarity vs. geographical distance: Family") +
+  xlab("Geographical distance (km)") +
+  ylab("Bray-Curtis dissimilarity index: Family-level") +
+  theme_bw() +
+  theme(axis.title = element_text(face = "bold", size = 12),
+        plot.title = element_text(face = "bold", hjust = 0.5),
+        plot.background = element_rect(fill = "transparent", color = NA),
+        panel.background = element_rect(fill = "transparent", color = NA)) +
+  annotate("text", x = Inf, y = -Inf, hjust = 1.1, vjust = -1.5,
+           label = label_family, size = 4.5, fontface = "italic", color = "black")
+
+family_plot
+
+# ggsave(filename = "similarity_vs_distance_family.png", plot = family_plot,
+#        width = 6, height = 4, dpi = 300)
+```
+
+*##############################################################################*

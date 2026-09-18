@@ -1,0 +1,81 @@
+---
+title: "Objective 1.2: Testing species-area relationship (Spearman correlation)"
+output: html_notebook
+---
+
+*Aim: To test whether species richness increases with plateau area, using Spearman's rank correlation.*
+
+This method assesses monotonic relationships without assuming linearity, and is robust to outliers, making it more
+appropriate here than Pearson's correlation given the small sample size (n = 8) and the wide range in plateau area.
+
+Data required: site_attributes_matrix.csv
+
+1. Load data:
+```{r}
+library(dplyr)
+
+site_attributes <- read.csv("site_attributes_data_matrix.csv")
+
+rich_area <- site_attributes %>%
+  select(Study.site, Species.richness, Area) # Area is in sq. km.
+
+print(rich_area)
+```
+
+2. Run Spearman's rank correlation (all eight sites included):
+```{r}
+spearman_result <- cor.test(rich_area$Species.richness, rich_area$Area,
+                             method = "spearman")
+
+spearman_result
+```
+
+Result:
+
+Correlation coefficient (rho): 0.323 (weak positive correlation)
+p-value: 0.434 (not statistically significant)
+
+3. Scatter plot of species richness vs. area:
+```{r}
+library(ggplot2)
+library(ggrepel)
+
+# Build the annotation label directly from the test result, so the plot
+# can never fall out of sync with the reported statistics
+spearman_label <- paste0(
+  "rho = ", round(spearman_result$estimate, 3),
+  ", P = ", round(spearman_result$p.value, 3)
+)
+
+spearman_plot <- ggplot(rich_area, aes(x = Area, y = Species.richness)) +
+
+  geom_smooth(method = "lm", color = "black", linewidth = 1.5, se = TRUE) +
+
+  geom_point(color = "#F67065", size = 3) +
+
+  geom_text_repel(aes(label = Study.site), size = 3,
+                   box.padding = 0.3,
+                   point.padding = 0.3) +
+
+  theme_bw() +
+
+  theme(plot.background = element_rect(fill = "transparent", color = NA),
+        panel.background = element_rect(fill = "transparent", color = NA),
+        plot.title = element_text(face = "bold", hjust = 0.5),
+        axis.title = element_text(face = "bold", size = 12)) +
+
+  ggtitle("Spearman correlation between species richness and area") +
+  xlab("Area (sq. km)") + ylab("Species richness") +
+
+  annotate("text", x = Inf, y = -Inf, hjust = 1.1, vjust = -1.5,
+           label = spearman_label,
+           size = 4.5, fontface = "italic", color = "black")
+
+spearman_plot
+
+# Save the plot
+# ggsave(filename = "species_richness_vs_area.png", plot = spearman_plot,
+#        width = 6, height = 4, dpi = 300)
+```
+
+*##############################################################################*

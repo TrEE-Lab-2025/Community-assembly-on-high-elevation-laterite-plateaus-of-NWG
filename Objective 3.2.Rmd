@@ -1,0 +1,172 @@
+---
+title: "Objective 3.2: Spatial and environmental predictors of species turnover (GDM)"
+output: html_notebook
+---
+
+*Aim: To identify which spatial and environmental variables best explain pairwise dissimilarity in plant communities among sites, using Generalised Dissimilarity Modelling (GDM), for both species presence-absence (Jaccard) and species abundance (Bray-Curtis).*
+
+Data required: 
+
+site_species_qualitative_data_matrix.csv
+site_species_quantitative_data_matrix.csv
+site_environment_data_matrix.csv
+
+```{r}
+library(dplyr)
+library(tibble)
+library(sf)
+library(gdm)
+library(ggplot2)
+```
+
+1. Load and format species data:
+```{r}
+## Species.code (unique identifier) is used as the row name before transposing;
+## Flowering.species and Sr..No. are dropped as they are not needed here.
+
+binary_final <- read.csv("site_species_qualitative_data_matrix.csv", stringsAsFactors = FALSE) %>%
+  select(-any_of(c("Flowering.species", "Sr..No."))) %>%
+  column_to_rownames("Species.code") %>%
+  t() %>%
+  as.data.frame()
+binary_final <- as.data.frame(lapply(binary_final, as.numeric), row.names = rownames(binary_final))
+binary_final$Site <- rownames(binary_final)
+binary_final <- binary_final[, c(ncol(binary_final), 1:(ncol(binary_final) - 1))]
+ 
+abundance_final <- read.csv("site_species_quantitative_data_matrix.csv", stringsAsFactors = FALSE) %>%
+  select(-any_of(c("Flowering.species", "Sr..No."))) %>%
+  column_to_rownames("Species.code") %>%
+  t() %>%
+  as.data.frame()
+abundance_final <- as.data.frame(lapply(abundance_final, as.numeric), row.names = rownames(abundance_final))
+abundance_final$Site <- rownames(abundance_final)
+abundance_final <- abundance_final[, c(ncol(abundance_final), 1:(ncol(abundance_final) - 1))]
+```
+
+2. Load environmental data and average across months to site level:
+```{r}
+# Uses the same site x month environmental matrix as Objective 3 (PCA), collapsed here to one row per site since GDM predictors are not resolved by month.
+
+geog_env_data <- read.csv("site_environment_data_matrix.csv", stringsAsFactors = FALSE)
+
+geog_env_final <- geog_env_data %>%
+  select(-any_of("Month")) %>%
+  group_by(Site) %>%
+  summarise(across(where(is.numeric), ~ mean(.x, na.rm = TRUE)), .groups = "drop") %>%
+  arrange(factor(Site, levels = binary_final$Site))
+```
+
+3. Project Lat-Long coordinates to UTM (Zone 43N):
+```{r}
+xy_coords <- geog_env_final[, c("Longitude", "Latitude")]
+stopifnot(all(xy_coords$Longitude >= 72 & xy_coords$Longitude < 78))  # confirm Zone 43N
+
+points_sf   <- st_as_sf(xy_coords, coords = c("Longitude", "Latitude"), crs = 4326)
+proj_string <- "+proj=utm +zone=43 +datum=WGS84 +units=m +no_defs"
+points_utm  <- st_transform(points_sf, crs = proj_string)
+
+XY <- as.data.frame(st_coordinates(points_utm)) / 1000  # rescale to km
+names(XY) <- c("X", "Y")
+
+geog_env_final$X_UTM <- XY$X
+geog_env_final$Y_UTM <- XY$Y
+```
+
+```{r}
+class(geog_env_final)
+str(geog_env_final)
+sapply(geog_env_final, class)
+dim(geog_env_final)
+
+pred_check <- geog_env_final[, c("Site", "Elevation", "tavg", "vapr", "srad", "prec", "X_UTM", "Y_UTM")]
+class(pred_check)
+sapply(pred_check, class)
+anyDuplicated(names(geog_env_final))
+```
+
+4. Run both GDM models:
+```{r}
+## Retaining only the uncorrelated predictors identified in the PCA analysis
+## (elevation, mean temperature, water vapour, solar radiation, precipitation).
+## Geographic distance is calculated internally by gdm from X_UTM/Y_UTM (geo = TRUE).
+
+env_vars <- c("Elevation", "tavg", "vapr", "srad", "prec")
+ 
+pred_data <- as.data.frame(geog_env_final[, c("Site", env_vars, "X_UTM", "Y_UTM")])
+ 
+gdm_data_jaccard <- formatsitepair(
+  bioData = binary_final, bioFormat = 1, dist = "jaccard", abundance = FALSE,
+  siteColumn = "Site",
+  predData = pred_data,
+  XColumn = "X_UTM", YColumn = "Y_UTM"
+)
+gdm_model_jaccard <- gdm(gdm_data_jaccard, geo = TRUE)
+summary(gdm_model_jaccard)
+
+gdm_data_bray <- formatsitepair(
+  bioData = abundance_final, bioFormat = 1, dist = "bray", abundance = FALSE,
+  siteColumn = "Site",
+  predData = pred_data,
+  XColumn = "X_UTM", YColumn = "Y_UTM"
+)
+gdm_model_bray <- gdm(gdm_data_bray, geo = TRUE)
+summary(gdm_model_bray)
+```
+
+5. Extract predictor importance (sum of I-spline coefficients):
+```{r}
+## gdm's coefficients vector is unnamed; predictor identity is instead stored in
+## model$predictors (predictor names) and model$splines (I-spline knots per predictor,
+## usually 3 each). Repeating each predictor name by its knot count reconstructs the
+## grouping vector needed to sum coefficients per predictor.
+extract_importance <- function(model, dataset_label) {
+  predictor_groups <- rep(model$predictors, times = model$splines)
+  coeff_sums <- tapply(model$coefficients, predictor_groups, sum)
+  data.frame(Predictor = names(coeff_sums), Importance = as.numeric(coeff_sums),
+             Dataset = dataset_label)
+}
+ 
+imp_jaccard <- extract_importance(gdm_model_jaccard, "Presence-absence")
+imp_bray    <- extract_importance(gdm_model_bray, "Abundance")
+ 
+imp_data_both <- rbind(imp_jaccard, imp_bray)
+ 
+imp_data_both$Predictor <- recode(imp_data_both$Predictor,
+                                   "Elevation" = "Elevation", "tavg" = "Mean temperature",
+                                   "vapr" = "Water vapour", "srad" = "Solar radiation",
+                                   "prec" = "Precipitation", "Geographic" = "Geographic distance")
+ 
+# Mean temperature showed no effect in either model (sum of coefficients ~0), so it is
+# excluded from the plot, matching Fig. 2.3 in the manuscript.
+imp_data_both <- imp_data_both[imp_data_both$Predictor != "Mean temperature", ]
+```
+
+6. Plot predictor importance for both models:
+```{r}
+imp_data_both$Predictor <- factor(imp_data_both$Predictor,
+  levels = c("Elevation", "Solar radiation", "Precipitation",
+             "Geographic distance", "Water vapour"))
+imp_data_both$Dataset <- factor(imp_data_both$Dataset,
+  levels = c("Presence-absence", "Abundance"))
+ 
+dataset_fills <- c("Presence-absence" = "black", "Abundance" = "white")
+ 
+gdm_combined <- ggplot(imp_data_both, aes(x = Predictor, y = Importance, fill = Dataset)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7, color = "black") +
+  scale_fill_manual(values = dataset_fills) +
+  labs(title = "Predictor importance in GDM analysis", y = "Sum of coefficients", x = NULL) +
+  theme_bw(base_size = 12) +
+  theme(
+    axis.text.x = element_text(color = "black", hjust = 0.5, face = "bold"),
+    axis.title.y = element_text(face = "bold", size = 12),
+    plot.title = element_text(face = "bold", hjust = 0.5, size = 12),
+    legend.position = "top",
+    plot.background = element_rect(fill = "transparent", color = NA),
+    panel.background = element_rect(fill = "transparent", color = NA),
+    legend.background = element_blank()
+  )
+ 
+gdm_combined
+```
+
+*##############################################################################*

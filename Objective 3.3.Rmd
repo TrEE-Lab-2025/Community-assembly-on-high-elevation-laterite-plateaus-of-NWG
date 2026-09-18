@@ -1,0 +1,218 @@
+---
+title: "Objective 3.3: Quantifying and disentangling the role of environment and space in shaping community structure"
+output: html_notebook
+---
+
+Aim:
+1. Redundancy Analysis (RDA)
+2. Variance partitioning (environment, spatial structure, pure space)
+
+Data required: 
+
+site_species_monthly_quantitative_data_matrix.csv: 86 species remain after excluding Eriocaulon's species
+site_environment_data_matrix.csv: site x month environmental data matrix (n = 32 rows = 8 sites x 4 months)
+site_attributes_data_matrix.csv
+
+*Aim 1: Redundancy Analysis (RDA)*
+
+```{r}
+library(dplyr)
+library(vegan)
+library(corrplot)
+library(RColorBrewer)
+library(sf)
+library(adespatial)
+```
+
+1. Load and order the species and environmental data matrices:
+```{r}
+site_order  <- c("Rai", "Kas", "Raj", "Cha", "Udg", "Bor", "Kha", "Man")
+month_order <- c("July", "Aug", "Sept", "Oct")
+
+species_data <- read.csv("site_species_monthly_quantitative_data_matrix.csv", stringsAsFactors = FALSE) %>%
+  mutate(Site = factor(Site, levels = site_order), Month = factor(Month, levels = month_order)) %>%
+  arrange(Site, Month)
+
+## site_environment_data_matrix.csv is transect-level (multiple rows per site x month);
+## average across transects to get one row per site x month before use.
+env_data_avg <- read.csv("site_environment_data_matrix.csv", stringsAsFactors = FALSE) %>%
+  select(-any_of("Site_transect")) %>%
+  mutate(Month = case_match(Month, "Jul" ~ "July", .default = Month)) %>%
+  group_by(Site, Month) %>%
+  summarise(across(where(is.numeric), ~ mean(.x, na.rm = TRUE)), .groups = "drop") %>%
+  mutate(Site = factor(Site, levels = site_order), Month = factor(Month, levels = month_order)) %>%
+  arrange(Site, Month)
+
+stopifnot(all(species_data$Site == env_data_avg$Site), all(species_data$Month == env_data_avg$Month))
+```
+
+2. Subset numeric columns:
+```{r}
+species_data_final <- subset(species_data, select = -c(Site, Month))
+env_data_final <- subset(env_data_avg, select = -c(Site, Month, Latitude, Longitude))
+```
+
+3. Hellinger-transform species abundance data and scale environmental data:
+```{r}
+## Note: Eriocaulon sp. are excluded from this abundance-based analysis, consistent
+## with the main text. A supplementary version retaining Eriocaulon is run separately
+## at the end of Objective 3.4.
+
+species_hel <- decostand(species_data_final, method = "hellinger")
+env_scaled <- as.data.frame(scale(env_data_final))
+```
+
+4. Correlation analysis to identify and remove collinear variables:
+```{r}
+cor_matrix <- cor(env_scaled, method = "pearson")
+corrplot(cor_matrix, method = "number")  # Fig. S3
+```
+
+```{r}
+# Based on the correlation matrix, wind speed, minimum temperature, and maximum temperature were each highly correlated (|r| > 0.8) with a retained variable and were excluded. 
+# Retained: elevation, mean temperature (tavg), water vapour pressure (vapr), solar radiation (srad), and precipitation (prec).
+env_sub <- subset(env_scaled, select = -c(tmax, tmin, wind))
+```
+
+5. Forward selection of significant environmental predictors:
+```{r}
+forward_model <- ordiR2step(
+  rda(species_hel ~ 1, data = env_sub),
+  scope = ~ Elevation + tavg + vapr + srad + prec,
+  direction = "forward",
+  permutations = 10000,
+  R2scope = TRUE
+)
+forward_model$anova
+
+selected_vars <- rownames(forward_model$anova)
+selected_vars <- selected_vars[!grepl("All variables", selected_vars)]
+selected_vars <- gsub("^\\+ ", "", selected_vars)
+```
+
+6. Run the final RDA using the forward-selected predictors:
+```{r}
+final_formula <- as.formula(paste("species_hel ~", paste(selected_vars, collapse = " + ")))
+final_rda <- rda(final_formula, data = env_sub)
+
+summary(final_rda)  # eigenvalues, species scores, site scores
+```
+
+7. Significance testing (constrained permutations):
+```{r}
+anova(final_rda, permutations = 9999)                # global model test
+anova(final_rda, by = "axis", permutations = 9999)   # individual RDA axes
+anova(final_rda, by = "terms", permutations = 9999)  # sequential (Type I): order-dependent
+anova(final_rda, by = "margin", permutations = 9999) # marginal (Type III): unique contribution
+
+# Repeated sampling of the same site across months violates independence, so permutations are additionally restricted within sites.
+perm <- how(blocks = env_data_avg$Site)
+anova(final_rda, by = "terms", permutations = perm)
+```
+
+8. Visualize the final model: sites with convex hulls and loading vectors:
+```{r}
+sites <- factor(env_data_avg$Site, levels = site_order)
+site_levels <- levels(sites)
+site_colors <- brewer.pal(n = length(site_levels), name = "Set2")
+
+months <- factor(env_data_avg$Month, levels = month_order)
+month_levels <- levels(months)
+month_shapes <- c(21, 22, 24, 25)[months]
+
+ordiplot(final_rda, type = "n", scaling = 2)
+
+points(final_rda, display = "sites", pch = month_shapes, bg = site_colors[sites], col = "black")
+
+poly_colors <- adjustcolor(site_colors, alpha.f = 0.5)
+ordihull(final_rda, groups = sites, draw = "polygon",
+         col = poly_colors, border = site_colors, lwd = 2, scaling = 2, label = FALSE)
+
+env_arrows <- scores(final_rda, display = "bp", scaling = 2)
+arrows(0, 0, env_arrows[, 1], env_arrows[, 2], length = 0.1, col = "darkblue", lwd = 1.5)
+text(env_arrows[, 1], env_arrows[, 2], labels = rownames(env_arrows),
+     col = "darkblue", cex = 0.9, pos = 2, font = 2)
+
+legend("topright", legend = site_levels, fill = site_colors, border = "black",
+       title = "Site", cex = 0.8, bty = "n")
+legend("bottomright", legend = month_levels, pch = c(21, 22, 24, 25), pt.bg = "gray", col = "black",
+       title = "Month", cex = 0.8, bty = "n")
+```
+
+*##############################################################################*
+
+*Aim 2: Variance partitioning (environment, spatial structure, pure space)*
+
+9. Project site coordinates to UTM (Zone 43N):
+```{r}
+site_attributes <- read.csv("site_attributes_data_matrix.csv", stringsAsFactors = FALSE) %>%
+  mutate(Site = recode(Study.site,
+    "Raireshwar" = "Rai", "Kaas" = "Kas", "Rajapuri" = "Raj", "Chalkewadi" = "Cha",
+    "Udgiri" = "Udg", "Borbet" = "Bor", "Khamda dev" = "Kha", "Mangeli" = "Man"
+  )) %>%
+  select(Site, Latitude = Lat, Longitude = Long)
+ 
+xy_coords <- env_data_avg %>%
+  select(Site, Month) %>%
+  left_join(site_attributes, by = "Site")
+ 
+stopifnot(!any(is.na(xy_coords$Latitude)))  # confirm every site matched during recode
+ 
+stopifnot(all(xy_coords$Longitude >= 72 & xy_coords$Longitude < 78))  # confirm Zone 43N
+ 
+points_sf   <- st_as_sf(xy_coords, coords = c("Longitude", "Latitude"), crs = 4326)
+proj_string <- "+proj=utm +zone=43 +datum=WGS84 +units=m +no_defs"
+points_utm  <- st_transform(points_sf, crs = proj_string)
+ 
+XY <- as.data.frame(st_coordinates(points_utm)) / 1000  # rescale to km
+names(XY) <- c("X", "Y")
+```
+
+10. Distance-based Moran's Eigenvector Maps (dbMEMs):
+```{r}
+dbmem_vars <- dbmem(XY, silent = FALSE)
+ 
+rda_mems <- rda(species_hel ~ ., data = dbmem_vars)
+summary(rda_mems)
+ 
+forward_mems <- ordiR2step(
+  rda(species_hel ~ 1, data = dbmem_vars),
+  scope = formula(rda_mems),
+  direction = "forward",
+  permutations = 10000
+)
+forward_mems$anova
+ 
+mems_selected <- rownames(forward_mems$anova)
+mems_selected <- mems_selected[!grepl("All variables", mems_selected)]
+mems_selected <- gsub("^\\+ ", "", mems_selected)
+mems_vars <- dbmem_vars[, mems_selected, drop = FALSE]
+```
+
+11. Perform variance partitioning: environment, spatial structure, space:
+```{r}
+env_vars <- env_sub[, selected_vars]
+ 
+varpart_result <- varpart(species_hel, env_vars, mems_vars, XY)
+varpart_result
+ 
+plot(varpart_result,
+     Xnames = c("Env.", "MEM", "Space"),
+     bg = c("#F67065", "#335C8A", "#6AA6B4"),
+     col = "black", lwd = 1.2, id.size = 0, cex = 1)
+title("Variance partitioning of species assemblages", font.main = 2, cex.main = 1.2)
+```
+
+12. Test the significance of each component:
+```{r}
+anova.cca(rda(species_hel, env_vars))
+RsquareAdj(rda(species_hel, env_vars))$adj.r.squared
+ 
+anova.cca(rda(species_hel, mems_vars))
+RsquareAdj(rda(species_hel, mems_vars))$adj.r.squared
+ 
+anova.cca(rda(species_hel, XY))
+RsquareAdj(rda(species_hel, XY))$adj.r.squared
+```
+
+*##############################################################################*
